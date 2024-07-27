@@ -87,14 +87,13 @@ This was my first First Flight , had a lot of fun understanding and messing arou
 | Severity | Number of issues found |
 | -------- | ---------------------- |
 | High     | 6                      |
-| Medium   | 2                      |
+| Medium   | 3                      |
 | Low      | 2                      |
 | Gas      | 6                      |
 | Info     | 2                      |
-| Total    | 18                     |
+| Total    | 19                     |
 
 # Findings
-
 # High
 
 ### [H-1] `ThePredicter::cancelRegistration` has potential re-entrancy bug , allowing malicious user to drain the contract's balance
@@ -104,7 +103,7 @@ This was my first First Flight , had a lot of fun understanding and messing arou
 ```javascript
     function cancelRegistration() public {
         if (playersStatus[msg.sender] == Status.Pending) {
-            (bool success, ) = msg.sender.call{value: entranceFee}("");
+=>          (bool success, ) = msg.sender.call{value: entranceFee}("");
             require(success, "Failed to withdraw");
             playersStatus[msg.sender] = Status.Canceled;
             return;
@@ -117,7 +116,7 @@ This was my first First Flight , had a lot of fun understanding and messing arou
 
 **Proof of Concept:**
 1. 20 people enter the raffle
-2. Attacker enters and immediately cancels their registration
+2. Attacker enters and immediately cancels his registration
 3. Their fallback/receive function is malicious and cancels the registration again
 4. This goes on in a loop until all the balance of the contract has been drained
 
@@ -160,18 +159,19 @@ Place the following test and contract into your test suite
 
 contract AttackCancelRegistration{
     ThePredicter thePredicter;
+    uint256 public constant ENTRANCE_FEE = 0.04 ether;
     constructor(ThePredicter _thePredicter)
     {
         thePredicter = _thePredicter;
     }
     function attack() public payable
     {
-        thePredicter.register{value: 0.04 ether}(); // this and the next call will be made by address(this)
+        thePredicter.register{value:ENTRANCE_FEE}(); // this and the next call will be made by address(this)
         thePredicter.cancelRegistration();
     }
     function stealMoney() internal
     {
-        if(address(thePredicter).balance >= 0.04 ether)
+        if(address(thePredicter).balance >= ENTRANCE_FEE)
         {
             thePredicter.cancelRegistration();
         }
@@ -204,7 +204,8 @@ contract AttackCancelRegistration{
     }
 ```
 
-1. Use re-entrancy lock by Open-zeppelin
+
+2. Use re-entrancy lock by Open-zeppelin
 
 ### [H-2] `ScoreBoard::setThePredicter` function is never called in `ThePredicter` contract , so we cannot access `ScoreBoard::confirmPredictionPayment` and `ScoreBoard::clearPredictionsCount` functions
 
@@ -281,7 +282,7 @@ If you remove the following statement from your `ThePredicter.test.sol :: setUp`
 ```
 
 
-### [H-3] `ThePredicter::withdrawPredictionFees` incorrectly calculates fees to be withdrawn be the Organiser , causing users entranceFee to be lost
+### [H-3] `ThePredicter::withdrawPredictionFees` incorrectly calculates fees to be withdrawn be the Organiser , causing users' entranceFee to be lost
 
 **Description:** The `ThePredicter::withdrawPredictionFees` function has the following line 
 
@@ -290,23 +291,23 @@ If you remove the following statement from your `ThePredicter.test.sol :: setUp`
 ```
 
 Now , the balance of the `ThePredicter` contract is consisted of 3 components
-- Prediction fees of all users
+- Prediction fees of all players
 - Entrance fee of the players
 - Entrance fee of the users , who werent approved to be players and still haven't withdrawn their entrance fee.
 
-The above line of code essentially ignores this third component , which may lead to loss of entrance fee.
+The above line of code essentially ignores this third component.
 
 **Impact:** Lets consider 2 scenarios
 
-1. Let there is one user who wasnt approved to be player and hasn't withdrawn their fee yet. Let the owner withdraw the fees . At this point , the balance of contract is `players.length * entranceFee`. Then rewards were distributed to the players. In this scenario , now the balance of the contract is 0 and the user who now wants to withdraw his entrance fee CANNOT do so.
-2. Again ,  Let there is one user who wasn't approved to be player and hasn't withdrawn their fee yet. Let the owner withdraw the fees . At this point , the balance of contract is `players.length * entranceFee`. Now suppose the user wants to withdraw their entrance fee . They can do so as the balance of the contract allows it . Now balance of contract is `(players.length * entranceFee) - entranceFee` . Now the rewards distribution calculation REQUIRES balance to be `players.length * entranceFee` , as the following line from `ThePredicter::withdraw` shows:
+1. Let there is one user who wasnt approved to be player and hasn't withdrawn their fee yet. Let the owner withdraw the fees . At this point , the balance of contract is `players.length * entranceFee`. Then rewards were distributed to the players. In this scenario , now the balance of the contract is `0` and the user who now wants to withdraw his entrance fee CANNOT do so.
+2. Again ,  Let there is one user who wasn't approved to be player and hasn't withdrawn their fee yet. Let the owner withdraw the fees . At this point , the balance of contract is `players.length * entranceFee`. Now suppose the user wants to withdraw their entrance fee . They can do so as the balance of the contract allows it . Now balance of contract is `(players.length * entranceFee) - entranceFee` . Now, players want to withdraw their rewards , but the rewards distribution calculation REQUIRES balance to be `players.length * entranceFee` . Look at the following line from `ThePredicter::withdraw`:
 
 ```javascript
     reward = maxScore < 0
             ? entranceFee
             : (shares * players.length * entranceFee) / totalShares;
 ```
-`ThePredicter::withdraw` function is such that each player will come and have their reward transferred to them if they are eligible for it. Clearly , all the rewards will sum up to `players.length * entranceFee`. But if the balance of contract is `(players.length * entranceFee) - entranceFee`, the `.call` to one of the winners WILL FAIL due to insufficient balance , leading to the winners not being able to collect the reawrds they were eligible for.
+`ThePredicter::withdraw` function is such that each player will come and have their reward transferred to them if they are eligible for it. Clearly , all the rewards will sum up to `players.length * entranceFee`. But if the balance of contract is `(players.length * entranceFee) - entranceFee`, the `.call` to one of the winners(specifically , the last winner to call `ThePredicter::withdraw` function) WILL FAIL due to insufficient balance , leading to the winners not being able to collect the rewards they were eligible for.
 
 **Proof of Concept:**
 
@@ -539,6 +540,44 @@ Place the following two tests into your `ThePredicter.test.sol` test suite
 
 **Recommended Mitigation:** Store all the prediction fees in a variable , increment it whenever a player makes a prediction , and withdraw that amount in the `ThePredicter::withdrawPredictionFees` function . Remember to reset that variable to `0` after withdrawing the prediction fees.
 
+```diff
++   uint256 totalPredictionFees = 0;
+    .
+    .
+    .
+    .
+
+    function makePrediction(
+        uint256 matchNumber,
+        ScoreBoard.Result prediction
+    ) public payable {
+        if (msg.value != predictionFee) {
+            revert ThePredicter__IncorrectPredictionFee();
+        }
+
+        if (block.timestamp > START_TIME + matchNumber * 68400 - 68400) {
+            revert ThePredicter__PredictionsAreClosed();
+        }
+
+        scoreBoard.confirmPredictionPayment(msg.sender, matchNumber);
+        scoreBoard.setPrediction(msg.sender, matchNumber, prediction);
+
++       totalPredictionFees += predictionFee;
+    }
+
+    function withdrawPredictionFees() public {
+        if (msg.sender != organizer) {
+            revert ThePredicter__NotEligibleForWithdraw();
+        }
+
+-       uint256 fees = address(this).balance - players.length * entranceFee;
++       uint256 fees = totalPredictionFees;
++       totalPredictionFees = 0 ;
+        (bool success, ) = msg.sender.call{value: fees}("");
+        require(success, "Failed to withdraw");
+    }
+```
+
 ### [H-4] `ThePredicter` is not set as the `owner` in `ScoreBoard` hence cannot access the `onlyOwner` functions of `ScoreBoard`.
 
 **Description:** `ScoreBoard` contract has a role called `owner` and a modifier `onlyOwner` which sets access controls for some functions.
@@ -659,7 +698,7 @@ Place the following test into `ThePredicter.test.sol`
             abi.encodeWithSelector(ThePredicter__PredictionsAreClosed.selector)
         );
         thePredicter.makePrediction{value: 0.0001 ether}(
-            0,
+            0, // bets of match-0 should be till 15 August 2024 19:00:00 UTC but this will revert
             ScoreBoard.Result.Draw
         );
 
@@ -669,7 +708,7 @@ Place the following test into `ThePredicter.test.sol`
             abi.encodeWithSelector(ThePredicter__PredictionsAreClosed.selector)
         );
         thePredicter.makePrediction{value: 0.0001 ether}(
-            1,
+            1, // bets of match-0 should be till 16 August 2024 19:00:00 UTC but this will revert
             ScoreBoard.Result.Draw
         );
     }
@@ -725,9 +764,9 @@ Explanation
 
 ### [H-6] `ThePredicter::withdraw` function skips the case of `maxScore == 0` , leading to loss of funds .
 
-**Description:** `ThePredicter::withdraw` function is about players calling it and getting the reward if they are eligible for it. But it skips the case where `maxScore` equals 0 , essentially making the `reward` variable 0 till the end of the function , and the winner wouldnt get any funds. 
+**Description:** `ThePredicter::withdraw` function is about players calling it and getting the reward if they are eligible for it. But it skips the case where `maxScore` equals 0 , essentially making the `reward` variable  = `0` till the end of the function , and the winner wouldnt get any funds. 
 
-**Impact:** All the winners wouldnt get any funds if `maxScore == 0`
+**Impact:** All the winners wouldn't get any funds if `maxScore == 0`
 
 **Proof of concept:**
 
@@ -776,6 +815,7 @@ Place the following test into `ThePredicter.test.sol`
             ScoreBoard.Result.Draw
         );
         vm.stopPrank();
+        // score of stranger = -3
 
         vm.startPrank(stranger2);
         thePredicter.makePrediction{value: 0.0001 ether}(
@@ -791,6 +831,7 @@ Place the following test into `ThePredicter.test.sol`
             ScoreBoard.Result.Draw
         );
         vm.stopPrank();
+        // score of stranger2 = 0
 
         vm.startPrank(stranger3);
         thePredicter.makePrediction{value: 0.0001 ether}(
@@ -806,6 +847,7 @@ Place the following test into `ThePredicter.test.sol`
             ScoreBoard.Result.Second
         );
         vm.stopPrank();
+        // score of stranger3 = -3
 
         vm.startPrank(organizer);
         scoreBoard.setResult(0, ScoreBoard.Result.First);
@@ -840,10 +882,12 @@ Place the following test into `ThePredicter.test.sol`
     }
 ```
 
+Clearly all players have <=0 score , hence they should get back their `entranceFee` but `withdraw` function is reverting.
+
 </details>
 
 
-**Recommended Mitigation:** If `maxScore == 0` , it means all players have `score` <= 0 , hence according to documentation , they must get back their entrance fee. To allow this functionality , make the following change in the reward calculation logic in the `ThePredicter::withdraw` function.
+**Recommended Mitigation:** Make the following change in the reward calculation logic in the `ThePredicter::withdraw` function.
 
 ```diff
 -   reward = maxScore < 0
@@ -856,7 +900,7 @@ Place the following test into `ThePredicter.test.sol`
 
 ### [M-1] Incorrect comparision in `ScoreBoard::isEligibleForReward` function , making players with 1 prediction not eligible for reward
 
-**Description:** The following line of code requires a player to have more than 1 prediction to be not eligible for reward , however the documentation states that a player with one or more than one prediction should be eligible for rewards.
+**Description:** The following line of code requires a player to have more than 1 prediction to be eligible for reward , however the documentation states that a player with ONE OR more than one prediction should be eligible for rewards.
 
 ```javascript
 function isEligibleForReward(address player) public view returns (bool) {
@@ -931,10 +975,25 @@ Users/Players/Organiser may have used a smart contract address to enter , and th
 **Recommended Mitigation:** Allow Users/Players/Organiser to pull their funds for themselves instead to sending it to them.
 > PULL OVER PUSH
 
+### [M-3] There is no function to set the result in `ThePredicter`
+
+Add the following function to `ThePredicter`
+
+```javascript
+    function setResultFromPredicterContract(uint256 matchNumber, ScoreBoard.Result result) public {
+        if (msg.sender != organizer) {
+            revert ThePredicter__UnauthorizedAccess();
+        }
+        setResult(matchNumber,result)
+    }
+```
+
+IMP NOTE:: This method won't work until you address issue number H-4 and its corresponding mitigations.
+
 # Low
 ### [L-1] Should have different names for access controls in `ScoreBoard` contract
 
-**Description:** `ScoreBoard` has `ScoreBoard__UnauthorizedAccess` errorand is used at 2 different modifiers , `onlyOwner` and  `onlyThePredicter` . Whenever these modifiers revert , they revert with `ScoreBoard__UnauthorizedAccess` which may cause some confusion which modifier actually reverted the transaction.
+**Description:** `ScoreBoard` has `ScoreBoard__UnauthorizedAccess` error and is used in 2 different modifiers , `onlyOwner` and  `onlyThePredicter` . Whenever these modifiers revert , they revert with `ScoreBoard__UnauthorizedAccess` which may cause some confusion which modifier actually reverted the transaction.
 
 ```javascript
 =>   error ScoreBoard__UnauthorizedAccess();
@@ -984,7 +1043,7 @@ Users/Players/Organiser may have used a smart contract address to enter , and th
 
 **Description:** The following functions should emit necessary events : `ScoreBoard::setThePredicter` , `ScoreBoard::setResult` , `ScoreBoard::confirmPredictionPayment` , `ScoreBoard::setPrediction` , `ScoreBoard::clearPredictionsCount` , `ThePredicter::register` , `ThePredicter::cancelRegistration` , `ThePredicter::approvePlayer` , `ThePredicter::makePrediction` , `ThePredicter::withdrawPredictionFees` , `ThePredicter::withdraw` 
 
-**Impact:** Protocol is less transparent and is difficult for nodes monitoring this protocol to check whether a particular function has been exexuted successfully or not
+**Impact:** Protocol is less transparent and makes it difficult for nodes to monitor this protocol to check whether a particular function has been executed successfully or not
 
 **Recommended Mitigation:** Emit neccessary events if a function is executed successfully.
 
@@ -996,11 +1055,11 @@ Users/Players/Organiser may have used a smart contract address to enter , and th
 
 Instances
 - ThePredictor.sol
-- address owner
-ScoreBoard.sol
-- address public organizer;
-- uint256 public entranceFee;
-- uint256 public predictionFee;
+  - address owner
+- ScoreBoard.sol
+  - address public organizer;
+  - uint256 public entranceFee;
+  - uint256 public predictionFee;
 
 **Impact:** Higher gas will be used
 
@@ -1128,7 +1187,6 @@ According to the function logic , reward will always be > 0 , so it is best to r
 
 ### [I-1] The function `ScoreBoard::setResult` uses `matchNumber` (index of `results` array) as input , which may mistakenly be out of range
 
-
 **Description:** `ScoreBoard::setResult` function has a input parameter called `matchNumber` which represents the index of the `results` array. We know Organiser isn't malicious but he may make a mistake of giving the index which is greater than or equal to the length of  `results` array , which will revert.
 
 **Impact:** Organiser might have to call `ScoreBoard::setResult` function again , causing him more gas.
@@ -1137,12 +1195,12 @@ According to the function logic , reward will always be > 0 , so it is best to r
 
 ```diff
 
-+error ScoreBoard__InvalidMatchNumber;
++   error ScoreBoard__InvalidMatchNumber;
 .
 .
 .
 
-function setResult(uint256 matchNumber, Result result) public onlyOwner {
+    function setResult(uint256 matchNumber, Result result) public onlyOwner {
 +       if(matchNumber < NUM_MATCHES)
 +       {
 +           revert ScoreBoard__InvalidMatchNumber;
