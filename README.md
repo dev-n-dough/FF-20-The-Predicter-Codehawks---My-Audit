@@ -49,7 +49,7 @@ Until 16:00:00 UTC on the day of the start of the tournament, Users can register
 User who is not approved can withdraw the deposited entry fee at any time.
 
 Two teams take part in the matches. Each match can end with:
-
+    
 - first team win (prediction First);
 - second team win (prediction Second);
 - or with a tie (prediction Draw).
